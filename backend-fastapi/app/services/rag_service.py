@@ -5,6 +5,17 @@ from app.repositories.document_repository import DocumentRepository
 
 class RagService:
 
+    FALLBACK_ANSWER = "لم أجد هذه المعلومة في الأرشيف."
+
+    # Nombre de résultats récupérés depuis ChromaDB
+    RETRIEVAL_K = 10
+
+    # Nombre maximum de chunks envoyés au LLM
+    MAX_CHUNKS_FOR_LLM = 5
+
+    # Taille maximale du contexte
+    MAX_CONTEXT = 12000
+
     def __init__(self):
 
         self.chroma_service = ChromaService()
@@ -22,17 +33,23 @@ class RagService:
 
         results = await self.chroma_service.search(
             question,
-            k=5
+            k=self.RETRIEVAL_K
         )
 
         print(
             f"Chunks retournés par Chroma : {len(results)}"
         )
 
+        # ============================================================
+        # Aucun résultat
+        # ============================================================
+
         if not results:
 
+            print("❌ Aucun résultat trouvé dans ChromaDB.")
+
             return {
-                "answer": "لم أجد هذه المعلومة في الأرشيف.",
+                "answer": self.FALLBACK_ANSWER,
                 "chunks": 0,
                 "sources": []
             }
@@ -44,7 +61,14 @@ class RagService:
         unique_results = []
         seen_texts = set()
 
-        for result in results:
+        for index, result in enumerate(
+            results,
+            start=1
+        ):
+
+            # --------------------------------------------------------
+            # Récupération du texte
+            # --------------------------------------------------------
 
             if isinstance(result, dict):
 
@@ -59,6 +83,15 @@ class RagService:
                     result.get("metadata")
                     or {}
                 )
+
+                # On récupère éventuellement le score
+                score = (
+                    result.get("score")
+                    if result.get("score") is not None
+                    else result.get("similarity")
+                )
+
+                distance = result.get("distance")
 
             else:
 
@@ -77,41 +110,107 @@ class RagService:
                     or {}
                 )
 
+                score = getattr(
+                    result,
+                    "score",
+                    None
+                )
+
+                distance = getattr(
+                    result,
+                    "distance",
+                    None
+                )
+
             text = str(text).strip()
+
+            # --------------------------------------------------------
+            # Résultat vide
+            # --------------------------------------------------------
 
             if not text:
                 continue
+
+            # --------------------------------------------------------
+            # DEBUG : afficher CHAQUE résultat Chroma
+            # --------------------------------------------------------
+
+            print(
+                f"\n----- RESULTAT CHROMA {index} -----"
+            )
+
+            print(
+                f"Score    : {score}"
+            )
+
+            print(
+                f"Distance : {distance}"
+            )
+
+            print(
+                f"Metadata : {metadata}"
+            )
+
+            print(
+                f"Text     : {text[:1500]}"
+            )
+
+            # --------------------------------------------------------
+            # Suppression des doublons
+            # --------------------------------------------------------
 
             if text in seen_texts:
                 continue
 
             seen_texts.add(text)
 
-            unique_results.append(
-                {
-                    "text": text,
-                    "metadata": metadata
-                }
-            )
+            item = {
+                "text": text,
+                "metadata": metadata
+            }
 
-            # On garde plusieurs passages pour le LLM
-            if len(unique_results) >= 3:
+            if score is not None:
+                item["score"] = score
+
+            if distance is not None:
+                item["distance"] = distance
+
+            unique_results.append(item)
+
+            # On conserve maximum 5 chunks
+            if (
+                len(unique_results)
+                >= self.MAX_CHUNKS_FOR_LLM
+            ):
                 break
 
+        # ============================================================
+        # 3. VÉRIFICATION
+        # ============================================================
+
         print(
-            f"Chunks utilisés pour le LLM : {len(unique_results)}"
+            "\n========== CHUNKS RETENUS =========="
+        )
+
+        print(
+            f"Nombre de chunks utilisés : "
+            f"{len(unique_results)}"
         )
 
         if not unique_results:
 
+            print(
+                "❌ Aucun chunk exploitable."
+            )
+
             return {
-                "answer": "لم أجد هذه المعلومة في الأرشيف.",
+                "answer": self.FALLBACK_ANSWER,
                 "chunks": 0,
                 "sources": []
             }
 
         # ============================================================
-        # 3. IDENTIFICATION DES DOCUMENTS
+        # 4. IDENTIFICATION DES DOCUMENTS
         # ============================================================
 
         document_ids = []
@@ -125,7 +224,7 @@ class RagService:
             metadata = item["metadata"]
 
             print(
-                f"\n----- Chunk {index} -----"
+                f"\n----- CHUNK FINAL {index} -----"
             )
 
             print(
@@ -142,22 +241,27 @@ class RagService:
 
             if document_id:
 
-                document_ids.append(
-                    str(document_id)
+                document_id = str(
+                    document_id
                 )
 
-        # Suppression des IDs en double
-        document_ids = list(
-            dict.fromkeys(
-                document_ids
-            )
+                if document_id not in document_ids:
+
+                    document_ids.append(
+                        document_id
+                    )
+
+        print(
+            "\n========== DOCUMENT IDS =========="
+        )
+
+        print(
+            document_ids
         )
 
         # ============================================================
-        # 4. CONSTRUCTION DU CONTEXTE
+        # 5. CONSTRUCTION DU CONTEXTE
         # ============================================================
-
-        MAX_CONTEXT = 6000
 
         context_parts = []
         current_length = 0
@@ -169,23 +273,37 @@ class RagService:
 
             text = item["text"]
 
-            remaining = (
-                MAX_CONTEXT
-                - current_length
-            )
-
-            if remaining <= 0:
-                break
-
-            if len(text) > remaining:
-                text = text[:remaining]
-
             passage = (
                 f"\n"
                 f"================ PASSAGE {index} ================\n"
                 f"{text}\n"
                 f"============== FIN PASSAGE {index} ==============\n"
             )
+
+            remaining = (
+                self.MAX_CONTEXT
+                - current_length
+            )
+
+            if remaining <= 0:
+                break
+
+            # --------------------------------------------------------
+            # Si le passage dépasse la limite
+            # --------------------------------------------------------
+
+            if len(passage) > remaining:
+
+                # Si aucun passage n'a encore été ajouté,
+                # on coupe exceptionnellement.
+                if not context_parts:
+
+                    passage = passage[:remaining]
+
+                else:
+
+                    # On évite de couper un chunk pertinent
+                    break
 
             context_parts.append(
                 passage
@@ -199,73 +317,92 @@ class RagService:
             context_parts
         )
 
+        print(
+            "\n========== CONTEXT =========="
+        )
+
+        print(
+            f"Taille du contexte : "
+            f"{len(context)} caractères"
+        )
+
+        print(context)
+
         # ============================================================
-        # 5. PROMPT RAG
+        # 6. PROMPT RAG
         # ============================================================
 
         prompt = f"""
 أنت مساعد ذكي متخصص في البحث داخل أرشيف SNRT.
 
-مهمتك هي الإجابة عن سؤال المستخدم اعتماداً فقط على المعلومات
-الموجودة في المقاطع التي تم استرجاعها من أرشيف SNRT.
+مهمتك هي الإجابة عن سؤال المستخدم اعتماداً حصراً على المعلومات
+الموجودة في المقاطع المسترجعة من أرشيف SNRT.
 
 ========================
 قواعد مهمة جداً
 ========================
 
-1. استخدم المعلومات الموجودة في المقاطع فقط.
+1. اقرأ جميع المقاطع قبل الإجابة.
 
-2. لا تضف أي معلومة من معرفتك الخاصة.
+2. حلل السؤال أولاً وحدد الكلمات والعبارات الأساسية فيه.
 
-3. لا تخترع أسماء أو أحداثاً أو تفاصيل غير موجودة في المقاطع.
+3. ابحث عن المعلومة المطلوبة داخل جميع المقاطع.
 
-4. اقرأ جميع المقاطع قبل الإجابة.
+4. إذا وجدت عبارة مطابقة أو قريبة جداً من الكلمات الأساسية
+   في السؤال، استخدم المعلومات المرتبطة بها للإجابة.
 
-5. قد تكون بعض المقاطع غير مرتبطة مباشرة بالسؤال.
-   تجاهل أي مقطع لا يحتوي على معلومات تساعد في الإجابة.
+5. إذا كان السؤال عن "موضوع" برنامج أو فقرة، ابحث عن السطر
+   الذي يحتوي على "الموضوع" المرتبط بذلك البرنامج أو الفقرة.
 
-6. إذا كانت المعلومة المطلوبة موجودة في أكثر من مقطع،
-   اجمع المعلومات المرتبطة بها في إجابة واحدة متماسكة.
+6. إذا كان السؤال عن شخص، ابحث عن اسمه ودوره أو صفته.
 
-7. لا تكتفِ بكلمة واحدة إذا كان السياق يسمح بتقديم إجابة
-   أكثر وضوحاً وتفيد المستخدم.
+7. إذا كان السؤال عن وقت، ابحث عن التوقيت المرتبط بالبرنامج.
 
-8. أجب بجملة كاملة أو عدة جمل قصيرة حسب طبيعة السؤال.
+8. إذا كان السؤال عن حلقة، ابحث عن رقم الحلقة.
 
-9. إذا كان السؤال عن شخص، اذكر اسمه ودوره أو علاقته بالحدث
-   إذا كانت هذه المعلومات موجودة في السياق.
+9. قد تكون بعض المقاطع غير مرتبطة بالسؤال.
+   تجاهل المقاطع غير المرتبطة.
 
-10. إذا كان السؤال عن حدث، اشرح الحدث باختصار وبشكل واضح.
+10. لا تعتمد على مقطع واحد فقط إذا كانت المعلومة المطلوبة
+    يمكن العثور عليها في مقطع آخر.
 
-11. إذا كان السؤال عن سبب أو نتيجة، اذكر السبب أو النتيجة
-    الموجودة في السياق.
+11. لا تضف أي معلومة من معرفتك الخاصة.
 
-12. إذا كان السؤال يتطلب مقارنة بين أشخاص أو أحداث،
-    استخدم المعلومات الموجودة في المقاطع للمقارنة.
+12. لا تخترع أسماء أو أحداثاً أو تواريخ أو تفاصيل.
 
-13. لا تكرر السؤال في الإجابة.
+13. إذا كانت الإجابة موجودة بوضوح في المقاطع،
+    أجب عنها مباشرة.
 
-14. لا تبدأ الإجابة بعبارات مثل:
-    "وفقاً للنص"
+14. لا تقل "لم أجد هذه المعلومة في الأرشيف" إذا كانت
+    المعلومة موجودة في أحد المقاطع.
+
+15. إذا كانت المعلومة موجودة بشكل جزئي، استخدم الجزء الموجود
+    فقط ولا تخترع الجزء الناقص.
+
+16. أجب بجملة كاملة وواضحة ومباشرة.
+
+17. لا تكرر السؤال في الإجابة.
+
+18. لا تذكر أرقام المقاطع أو كلمة "المقطع" في الإجابة.
+
+19. لا تبدأ الإجابة بعبارات مثل:
+    "وفقاً للمقطع"
     أو
     "حسب الوثيقة"
     إلا إذا كان ذلك ضرورياً.
 
-15. أجب بنفس لغة السؤال.
+20. أجب بنفس لغة السؤال.
 
-16. إذا كان السؤال باللغة العربية، أجب باللغة العربية.
+21. إذا كان السؤال باللغة العربية، أجب باللغة العربية.
 
-17. إذا كان السؤال باللغة الفرنسية، أجب باللغة الفرنسية.
+22. إذا كان السؤال باللغة الفرنسية، أجب باللغة الفرنسية.
 
-18. إذا كانت الإجابة موجودة بوضوح في السياق،
-    لا تقل إنك لا تعرف الإجابة.
-
-19. إذا كانت المعلومات الموجودة في المقاطع لا تسمح بالإجابة
-    عن السؤال، أجب فقط:
+23. إذا كانت المعلومة المطلوبة غير موجودة فعلاً في جميع
+    المقاطع، أجب فقط:
 
     "لم أجد هذه المعلومة في الأرشيف."
 
-20. لا تستخدم معلومات خارج المقاطع المقدمة لك.
+24. لا تستخدم أي معلومات خارج المقاطع المقدمة.
 
 ========================
 المقاطع المسترجعة من الأرشيف
@@ -280,18 +417,26 @@ class RagService:
 {question}
 
 ========================
-تعليمات الإجابة
+تعليمات نهائية
 ========================
 
 حلل السؤال أولاً، ثم ابحث عن المعلومات المتعلقة به داخل
-المقاطع.
+جميع المقاطع.
 
-بعد ذلك قدم إجابة واضحة ومباشرة وكاملة.
+إذا وجدت المعلومة المطلوبة، قدم إجابة واضحة ومباشرة وكاملة.
 
 لا تذكر المقاطع أو أرقامها في الإجابة.
 
+إذا لم تجد المعلومة فعلاً، أجب:
+
+"لم أجد هذه المعلومة في الأرشيف."
+
 الإجابة:
 """
+
+        # ============================================================
+        # 7. AFFICHAGE DU PROMPT
+        # ============================================================
 
         print(
             "\n========== PROMPT ENVOYÉ AU LLM ==========\n"
@@ -304,7 +449,7 @@ class RagService:
         )
 
         # ============================================================
-        # 6. APPEL DU LLM
+        # 8. APPEL DU LLM
         # ============================================================
 
         answer = await self.llm_service.generate(
@@ -322,93 +467,42 @@ class RagService:
             "\n========== LLM ANSWER =========="
         )
 
-        print(answer)
+        print(
+            answer
+        )
 
         # ============================================================
-        # 7. SOURCES AFFICHÉES
-        # ============================================================
-        #
-        # IMPORTANT :
-        #
-        # Le LLM reçoit toujours les 3 passages.
-        #
-        # Mais pour l'affichage, on garde uniquement le document
-        # correspondant au premier résultat de Chroma.
-        #
-        # Le premier résultat est celui qui possède la priorité
-        # sémantique la plus élevée.
-        #
-        # Cela permet d'éviter d'afficher des documents secondaires
-        # qui ont été récupérés uniquement parce que k=5.
-        #
-        # ============================================================
-
-        display_results = []
-
-        if unique_results:
-
-            # Premier résultat = priorité sémantique maximale
-            best_result = unique_results[0]
-
-            best_document_id = (
-                best_result["metadata"].get(
-                    "document_id"
-                )
-            )
-
-            if best_document_id:
-
-                best_document_id = str(
-                    best_document_id
-                )
-
-                display_results.append(
-                    best_result
-                )
-
-                print(
-                    "\n========== SOURCE PRIORITAIRE =========="
-                )
-
-                print(
-                    f"Document ID : {best_document_id}"
-                )
-
-                print(
-                    f"Metadata : {best_result['metadata']}"
-                )
-
-                print(
-                    f"Excerpt : {best_result['text']}"
-                )
-
-        # ============================================================
-        # 8. RÉCUPÉRATION DU DOCUMENT PRIORITAIRE DANS MONGODB
+        # 9. SOURCES
         # ============================================================
 
         sources = []
 
+        # ------------------------------------------------------------
+        # Tous les documents correspondant aux chunks retenus
+        # ------------------------------------------------------------
+
         display_document_ids = []
 
-        for item in display_results:
+        for item in unique_results:
 
-            document_id = (
-                item["metadata"].get(
-                    "document_id"
-                )
+            metadata = item["metadata"]
+
+            document_id = metadata.get(
+                "document_id"
             )
 
-            if document_id:
+            if not document_id:
+                continue
 
-                document_id = str(
+            document_id = str(
+                document_id
+            )
+
+            if document_id not in display_document_ids:
+
+                display_document_ids.append(
                     document_id
                 )
-
-                if document_id not in display_document_ids:
-
-                    display_document_ids.append(
-                        document_id
-                    )
 
         print(
             "\n========== SOURCE IDS AFFICHÉS =========="
@@ -417,6 +511,10 @@ class RagService:
         print(
             display_document_ids
         )
+
+        # ============================================================
+        # 10. RÉCUPÉRATION DES DOCUMENTS MONGODB
+        # ============================================================
 
         if display_document_ids:
 
@@ -442,7 +540,13 @@ class RagService:
                     for document in documents
                 }
 
-                for item in display_results:
+                # ----------------------------------------------------
+                # Une source par document
+                # ----------------------------------------------------
+
+                added_sources = set()
+
+                for item in unique_results:
 
                     metadata = item["metadata"]
 
@@ -456,6 +560,9 @@ class RagService:
                     document_id = str(
                         document_id
                     )
+
+                    if document_id in added_sources:
+                        continue
 
                     document = (
                         documents_by_id.get(
@@ -551,11 +658,14 @@ class RagService:
                         source
                     )
 
+                    added_sources.add(
+                        document_id
+                    )
+
             except Exception as e:
 
                 print(
-                    "❌ Erreur récupération "
-                    "MongoDB source:"
+                    "❌ Erreur récupération MongoDB source:"
                 )
 
                 print(
@@ -563,7 +673,7 @@ class RagService:
                 )
 
         # ============================================================
-        # 9. RÉPONSE FINALE
+        # 11. RÉPONSE FINALE
         # ============================================================
 
         result = {
@@ -571,11 +681,9 @@ class RagService:
             "answer":
                 answer,
 
-            # Nombre de chunks réellement utilisés par le LLM
             "chunks":
                 len(unique_results),
 
-            # Seulement les sources prioritaires affichées
             "sources":
                 sources
         }
@@ -584,13 +692,17 @@ class RagService:
             "\n========== SOURCES AFFICHÉES =========="
         )
 
-        print(sources)
+        print(
+            sources
+        )
 
         print(
             "\n========== RAG RESPONSE =========="
         )
 
-        print(result)
+        print(
+            result
+        )
 
         print(
             "==================================\n"
