@@ -127,7 +127,7 @@ Consultez ensuite l’application sur `http://localhost:5173`. Les fichiers envo
 
 Prometheus collecte les métriques exposées par l’API et les workers, notamment les volumes reçus et traités, les erreurs ainsi que les durées de traitement. Grafana fournit les tableaux de bord et l’alerting ; Loki centralise les journaux collectés par Grafana Alloy.
 
-## Guide d’utilisation de A à Z
+## Guide d’utilisation
 
 ### 1. Préparer la configuration
 
@@ -184,7 +184,55 @@ Vérifiez les modèles présents avec :
 docker compose exec ollama ollama list
 ```
 
-### 3. Vérifier que la plateforme est prête
+### 3. Créer le premier compte administrateur
+
+L’écran de connexion ne permet pas de créer un compte. De plus, les routes de gestion des utilisateurs sont réservées aux administrateurs : sur une installation neuve, le premier compte `ADMIN` doit donc être créé une seule fois dans MongoDB.
+
+> Cette procédure concerne uniquement une base MongoDB vide. Utilisez un mot de passe initial fort et remplacez les valeurs d’exemple par les informations de votre administrateur.
+
+1. Générez un hash bcrypt du mot de passe. Ne stockez jamais un mot de passe en clair dans MongoDB :
+
+   ```bash
+   docker compose exec backend python -c "from app.security.password import hash_password; print(hash_password('ChangezMoi!2026'))"
+   ```
+
+2. Ouvrez le shell MongoDB :
+
+   ```bash
+   docker compose exec mongodb mongosh
+   ```
+
+3. Sélectionnez la base dont le nom est défini par `MONGO_DB` dans `.env`, puis insérez le compte et initialisez le compteur. Remplacez `NOM_DE_LA_BASE`, les données personnelles et `COLLER_ICI_LE_HASH_BCRYPT` :
+
+   ```javascript
+   use NOM_DE_LA_BASE
+
+   db.counters.updateOne(
+     { _id: "users" },
+     { $set: { sequence: 1 } },
+     { upsert: true }
+   )
+
+   db.users.insertOne({
+     user_id: "USR-000001",
+     first_name: "Prenom",
+     last_name: "Nom",
+     email: "admin@snrt.ma",
+     phone: "0600000000",
+     department: "Administration",
+     role: "ADMIN",
+     status: "ACTIVE",
+     password: "COLLER_ICI_LE_HASH_BCRYPT",
+     created_at: new Date().toISOString(),
+     updated_at: new Date().toISOString()
+   })
+   ```
+
+4. Quittez avec `exit`, puis connectez-vous sur `http://localhost:5173` avec l’adresse e-mail et le mot de passe choisis à l’étape 1.
+
+Une fois ce premier administrateur créé, tous les comptes suivants doivent être créés depuis l’interface d’administration ; il n’est plus nécessaire de les insérer directement dans MongoDB.
+
+### 4. Vérifier que la plateforme est prête
 
 Ouvrez `http://localhost:5173`, puis utilisez l’interface de connexion. L’API est disponible sur `http://localhost:8000` et sa documentation interactive sur `http://localhost:8000/docs`.
 
@@ -198,7 +246,35 @@ docker compose logs --tail=100 audio-worker document-worker llm-worker embedding
 
 Un worker en erreur ou arrêté empêche seulement l’étape associée du pipeline : par exemple, sans `document-worker` les documents ne sont pas extraits ; sans `embedding-worker`, ils restent disponibles en recherche textuelle mais pas en recherche sémantique ni dans le RAG.
 
-### 4. Déposer et suivre une archive
+### 5. Gérer les utilisateurs et les rôles
+
+Connectez-vous avec un compte `ADMIN`, ouvrez **Utilisateurs**, puis cliquez sur **Ajouter un utilisateur**. Renseignez les informations demandées et choisissez l’un des rôles suivants :
+
+| Rôle | Accès fonctionnel |
+|---|---|
+| `ADMIN` | Tableau de bord, gestion des utilisateurs, dépôt, consultation des documents et tous les modes de recherche. |
+| `DOCUMENTALIST` | Dépôt d’archives, consultation des documents et recherches ; pas de gestion des utilisateurs. |
+| `SNRT_USER` | Consultation des documents et recherches ; pas de dépôt ni de gestion des utilisateurs. |
+
+Lors de sa création via l’interface, un utilisateur reçoit actuellement le mot de passe initial **`123456`**. Communiquez-le de manière sécurisée à l’utilisateur et demandez son remplacement dès que cette fonctionnalité sera disponible.
+
+> À ce jour, l’interface affiche un lien « Changer le mot de passe », mais l’API de changement de mot de passe n’est pas encore implémentée. Il ne faut donc pas considérer `123456` comme adapté à un environnement de production. La solution recommandée est d’ajouter un endpoint de changement/réinitialisation de mot de passe ; en attendant, seul un administrateur technique peut modifier le hash du mot de passe dans MongoDB.
+
+Pour modifier un rôle dans l’interface : **Utilisateurs** → sélectionner l’icône de modification → choisir le rôle dans la liste **Rôle** → **Enregistrer**. Le statut peut également être changé entre `ACTIVE` et `INACTIVE`.
+
+Pour un dépannage exceptionnel directement dans MongoDB, modifiez uniquement le champ `role` avec l’une des valeurs exactes `ADMIN`, `DOCUMENTALIST` ou `SNRT_USER` :
+
+```javascript
+use NOM_DE_LA_BASE
+db.users.updateOne(
+  { email: "utilisateur@snrt.ma" },
+  { $set: { role: "DOCUMENTALIST", updated_at: new Date().toISOString() } }
+)
+```
+
+L’utilisateur doit se déconnecter puis se reconnecter afin d’obtenir un nouveau jeton contenant son rôle mis à jour.
+
+### 6. Déposer et suivre une archive
 
 1. Connectez-vous à l’application.
 2. Ouvrez la page **Upload** et sélectionnez un document ou un fichier audio.
@@ -208,7 +284,7 @@ Un worker en erreur ou arrêté empêche seulement l’étape associée du pipel
 
 Les traitements se font en arrière-plan. Un fichier peut donc apparaître dans la liste avant que toutes les formes de recherche ne soient disponibles.
 
-### 5. Rechercher et interroger les archives
+### 7. Rechercher et interroger les archives
 
 - Utilisez **Search** pour une recherche par mots-clés : elle convient à un titre, une expression exacte, un nom ou un terme précis.
 - Utilisez **Semantic Search** pour rechercher une idée, un thème ou une formulation proche, même si les mêmes mots ne sont pas présents dans l’archive.
@@ -216,7 +292,7 @@ Les traitements se font en arrière-plan. Un fichier peut donc apparaître dans 
 
 Pour de meilleurs résultats, privilégiez des questions précises et vérifiez les archives proposées avec la réponse. La recherche sémantique et le RAG ne remplacent pas la validation éditoriale des documents source.
 
-### 6. Administrer la plateforme
+### 8. Administrer la plateforme
 
 Les utilisateurs disposant du rôle administrateur peuvent accéder au tableau de bord et à la gestion des utilisateurs. Ils peuvent suivre les volumes d’archives, l’état du traitement et organiser les accès à l’application. La suppression d’une archive doit être réalisée depuis l’interface ou l’API afin de maintenir la cohérence avec les index de recherche.
 
