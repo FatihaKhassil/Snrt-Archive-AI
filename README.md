@@ -256,9 +256,9 @@ Connectez-vous avec un compte `ADMIN`, ouvrez **Utilisateurs**, puis cliquez sur
 | `DOCUMENTALIST` | Dépôt d’archives, consultation des documents et recherches ; pas de gestion des utilisateurs. |
 | `SNRT_USER` | Consultation des documents et recherches ; pas de dépôt ni de gestion des utilisateurs. |
 
-Lors de sa création via l’interface, un utilisateur reçoit actuellement le mot de passe initial **`123456`**. Communiquez-le de manière sécurisée à l’utilisateur et demandez son remplacement dès que cette fonctionnalité sera disponible.
+Lors de sa création via l’interface, un utilisateur reçoit actuellement le mot de passe initial **`123456`**. Ce choix est volontairement temporaire : il simplifie les tests de l’application en évitant de gérer plusieurs mots de passe pendant la phase de démonstration et de validation.
 
-> À ce jour, l’interface affiche un lien « Changer le mot de passe », mais l’API de changement de mot de passe n’est pas encore implémentée. Il ne faut donc pas considérer `123456` comme adapté à un environnement de production. La solution recommandée est d’ajouter un endpoint de changement/réinitialisation de mot de passe ; en attendant, seul un administrateur technique peut modifier le hash du mot de passe dans MongoDB.
+> À ce jour, l’interface affiche un lien « Changer le mot de passe », mais l’API de changement de mot de passe n’est pas encore implémentée. Le mot de passe commun `123456` ne doit donc pas être utilisé en production. Avant la mise en production, il faut ajouter un endpoint de changement/réinitialisation de mot de passe et imposer un mot de passe personnel à chaque utilisateur ; en attendant, seul un administrateur technique peut modifier le hash du mot de passe dans MongoDB.
 
 Pour modifier un rôle dans l’interface : **Utilisateurs** → sélectionner l’icône de modification → choisir le rôle dans la liste **Rôle** → **Enregistrer**. Le statut peut également être changé entre `ACTIVE` et `INACTIVE`.
 
@@ -354,3 +354,7 @@ docker compose down
 ```
 
 Les données MongoDB, ChromaDB, Ollama, Prometheus, Grafana et Loki sont conservées dans des volumes Docker nommés. Pour repartir de zéro, la suppression de ces volumes est une opération destructive : ne l’effectuez qu’après avoir sauvegardé les données nécessaires.
+
+---
+
+*Projet réalisé par Fatiha Khassil, étudiante à l’ENSIAS, au sein de la SNRT.*
