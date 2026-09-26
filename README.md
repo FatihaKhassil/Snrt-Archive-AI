@@ -175,4 +175,4 @@ and a few extra features are next on my list. Feedback and issues are always wel
 
 ---
 
-*Built by me, Fatiha Khassil, ENSIAS, for SNRT.*
+*Built by me, Fatiha Khassil, Student at ENSIAS, for SNRT.*
