@@ -20,7 +20,7 @@ questions (RAG-powered).
 - Keyword search (Apache Solr)
 - Semantic search via embeddings (ChromaDB)
 - Ask questions in natural language and get answers grounded in the archives (RAG)
-- User accounts, roles, and basic monitoring (Prometheus, Grafana, Loki)
+- User accounts, roles, and basic monitoring (Prometheus, Grafana)
 
 ## How a file moves through my system
 
